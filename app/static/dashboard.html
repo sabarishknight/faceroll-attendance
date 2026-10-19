@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Class attendance</title>
+<link rel="stylesheet" href="/static/common.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><h1>Class attendance</h1><span class="grow"></span><select class="classsel hide" id="cs"></select></div></header>
+<main class="wrap" style="padding-top:16px;padding-bottom:50px"><div class="stack" id="v">
+  <div class="tiles" id="tiles"></div>
+  <section class="card">
+    <label class="lab" style="margin-top:0">Find your attendance</label>
+    <input type="text" id="q" placeholder="Type your name or roll number" autocomplete="off">
+    <div class="row" style="margin-top:10px"><button class="pill btnlike" data-p="all">All dates</button><button class="pill btnlike" data-p="month">This month</button><button class="pill btnlike" data-p="30">Last 30 days</button></div>
+  </section>
+  <div id="me"></div>
+  <div id="mx"></div>
+  <p class="hint small" style="text-align:center">✓ attended · ✗ missed. Late arrival counts as missed for the hours you were not there.</p>
+</div></main>
+<script src="/static/matrix.js"></script>
+<script>
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const pad=n=>String(n).padStart(2,'0');
+let CL=[], CID=null, DATA=null, RANGE={from:'',to:''}, Q='';
+async function jget(u){const r=await fetch(u);if(!r.ok)throw new Error('Could not load');return r.json()}
+function preset(k){const t=new Date(),iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  if(k==='month')RANGE={from:iso(new Date(t.getFullYear(),t.getMonth(),1)),to:iso(t)};else if(k==='30'){const f=new Date(t);f.setDate(f.getDate()-29);RANGE={from:iso(f),to:iso(t)}}else RANGE={from:'',to:''}}
+async function init(){
+  CL=await jget('/api/public/classes');
+  if(!CL.length){$('#v').innerHTML='<div class="card empty">No classes yet.</div>';return}
+  const want=new URLSearchParams(location.search).get('c')||localStorage.getItem('dcid');
+  CID=CL.some(c=>c.id===want)?want:CL[0].id;
+  const cs=$('#cs');cs.innerHTML=CL.map(c=>`<option value="${c.id}" ${c.id===CID?'selected':''}>${esc(c.name)}</option>`).join('');
+  cs.classList.toggle('hide',CL.length<2);cs.onchange=()=>{CID=cs.value;localStorage.setItem('dcid',CID);load()};
+  $$('[data-p]').forEach(b=>b.onclick=()=>{preset(b.dataset.p);$$('[data-p]').forEach(x=>x.classList.toggle('on',x===b));load()});
+  $('#q').oninput=e=>{Q=e.target.value.trim().toLowerCase();show()};
+  load();
+}
+async function load(){
+  const p=new URLSearchParams();if(RANGE.from)p.set('from',RANGE.from);if(RANGE.to)p.set('to',RANGE.to);
+  DATA=await jget(`/api/public/classes/${CID}/matrix${p.toString()?'?'+p:''}`);
+  document.title=DATA.cls.name+' - attendance';const s=DATA.summary;
+  $('#tiles').innerHTML=`<div class="tile"><b style="font-size:20px">${esc(DATA.cls.name)}</b><span>${s.students} students</span></div><div class="tile"><b>${s.sessions}</b><span>Classes taken</span></div>
+   <div class="tile"><b>${s.hours}</b><span>Class hours</span></div><div class="tile"><b>${s.avg==null?'-':s.avg+'%'}</b><span>Class average</span></div>`;
+  show();
+}
+function show(){
+  const match=r=>!Q||r.name.toLowerCase().includes(Q)||(r.roll||'').toLowerCase().includes(Q);
+  const hits=DATA.rows.filter(match);
+  const me=$('#me');
+  if(Q&&hits.length===1&&DATA.columns.length){
+    const r=hits[0],byDate={};
+    DATA.columns.forEach((c,i)=>{if(!r.cells[i]){(byDate[c.date]=byDate[c.date]||[]).push(c.label)}});
+    const missed=Object.entries(byDate).map(([d,l])=>`<div class="small"><b>${esc(fmtDate(d,true))}</b> - ${esc(l.join(', '))}</div>`).join('');
+    me.innerHTML=`<section class="card"><div class="row"><div class="grow"><h2>${esc(r.name)}</h2><div class="hint">${esc(r.roll||'')}</div></div>
+      <div style="text-align:right"><span class="pct ${pctClass(r.pct)}" style="font-size:28px;font-weight:800;padding:4px 14px">${r.pct}%</span><div class="hint small">${r.attended} of ${r.total} hours</div></div></div>
+      ${r.pct<75?'<div class="hint" style="margin-top:8px;color:var(--bad)">Below 75% - please attend regularly.</div>':''}
+      ${missed?`<div style="margin-top:12px"><b>Missed classes</b>${missed}</div>`:'<div style="margin-top:10px;color:var(--ok);font-weight:700">Perfect attendance ✓</div>'}</section>`;
+  } else me.innerHTML='';
+  renderMatrix($('#mx'),DATA,{filter:match,highlight:()=>false});
+}
+init().catch(e=>{$('#v').innerHTML='<div class="card empty">Could not load attendance. Please refresh.</div>'});
+</script>
+</body>
+</html>

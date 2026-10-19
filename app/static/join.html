@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Face scan</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+.stage{position:relative;background:#0b1020;border-radius:16px;overflow:hidden;aspect-ratio:3/4;max-height:62vh;width:100%;margin:0 auto}
+.stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.stage .ph0{position:absolute;inset:0;display:grid;place-items:center;color:#94a3b8;text-align:center;padding:20px}
+.hintbar{position:absolute;left:0;right:0;bottom:12px;text-align:center}
+.hintbar span{display:inline-block;background:#000b;color:#fff;padding:8px 16px;border-radius:999px;font-weight:700;max-width:92%}
+.hintbar span.ok{background:#15803dee}
+.names{max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:12px;background:#fff}
+.names button{display:flex;width:100%;gap:12px;align-items:center;text-align:left;border:0;border-bottom:1px solid var(--line);background:#fff;padding:13px 14px;font-size:16px;cursor:pointer}
+.names button:last-child{border-bottom:0}
+.names button:active{background:var(--accent-bg)}
+.names .r{min-width:44px;color:var(--mute);font-weight:600}
+.prog{display:flex;gap:8px;margin:14px 0 0}
+.prog .s{flex:1;text-align:center;font-size:13px;color:var(--mute);font-weight:600}
+.prog .b{height:8px;border-radius:5px;background:#e2e8f0;margin-bottom:6px;overflow:hidden}
+.prog .b i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+.prog .s.act{color:var(--accent)}.prog .s.done{color:var(--ok)}.prog .s.done .b i{background:#22c55e}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><h1>Face scan</h1><span class="grow"></span><span class="hint" id="clsName"></span></div></header>
+<main class="wrap" style="padding-top:16px;padding-bottom:50px;max-width:560px"><div id="view" class="stack"></div></main>
+<div class="toast" id="toast"></div>
+<script src="/static/matrix.js"></script>
+<script>
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const TOKEN=location.pathname.split('/')[2];
+const NEED={front:5,side_a:3,side_b:3,tilt_a:2,tilt_b:2}, ORDER=['front','side_a','side_b','tilt_a','tilt_b'];
+const LABEL={front:'Look straight',side_a:'Turn one side',side_b:'Other side',tilt_a:'Tilt head',tilt_b:'Tilt back'};
+const MSG={side_a:'Great! Now slowly turn your head to one side',side_b:'Now turn to the OTHER side',tilt_a:'Face the camera, then tilt your head a little up or down',tilt_b:'Now tilt the opposite way'};
+function toast(m,err,ms=4000){const t=$('#toast');t.textContent=m;t.className='toast'+(err?' err':'');t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',ms)}
+async function api(u,o){let r;try{r=await fetch(u,o)}catch(e){throw new Error('No connection - check your internet')}
+  let j=null;try{j=await r.json()}catch(e){}
+  if(!r.ok)throw new Error((j&&j.error)||('Server error ('+r.status+')'));return j}
+let INFO=null, PICK=null, showAll=false, stream=null, scanning=false, step='front', E=null;
+const resetE=()=>{E={crops:{front:[],side_a:[],side_b:[],tilt_a:[],tilt_b:[]},pitches:[],base:0,sign:0,tsign:0,last:0}};resetE();
+const prog=()=>Object.fromEntries(ORDER.map(k=>[k,E.crops[k].length]));
+
+async function start(){
+  try{INFO=await api(`/api/join/${TOKEN}/info`)}catch(e){$('#view').innerHTML=`<div class="card empty"><h2>${esc(e.message)}</h2><p>Ask your teacher for a new link.</p></div>`;return}
+  $('#clsName').textContent=INFO.cls; document.title='Face scan - '+INFO.cls; pickScreen();
+}
+function pickScreen(){
+  const list=INFO.students.filter(s=>showAll||!s.scanned);
+  const total=INFO.students.length, done=INFO.students.filter(s=>s.scanned).length;
+  if(!total){$('#view').innerHTML='<div class="card empty"><h2>No names yet</h2><p>Your teacher has not added the class list. Please try again later.</p></div>';return}
+  $('#view').innerHTML=`<section class="card stack"><div><h2>Find your name</h2><p class="hint" style="margin:4px 0 0">Tap your name, then scan your face. It takes about 30 seconds.</p></div>
+    <input type="text" id="q" placeholder="Search your name or roll number" autocomplete="off">
+    <div class="names" id="names"></div>
+    <div class="hint small">${done} of ${total} students have scanned. ${showAll?'':'Names that already scanned are hidden. '}<button class="link small" id="tog">${showAll?'Hide scanned names':'Already scanned? Show all names to scan again'}</button></div></section>`;
+  const draw=()=>{const q=$('#q').value.toLowerCase();const l=list.filter(s=>s.name.toLowerCase().includes(q)||(s.roll||'').toLowerCase().includes(q));
+    $('#names').innerHTML=l.map(s=>`<button data-id="${s.id}"><span class="r">${esc(s.roll||'')}</span><span class="grow">${esc(s.name)}</span>${s.scanned?'<span class="tag ok">scanned</span>':''}</button>`).join('')||'<div class="empty">No names found</div>';
+    $$('#names button').forEach(b=>b.onclick=()=>{PICK=INFO.students.find(s=>s.id===b.dataset.id);
+      if(PICK.scanned&&!confirm(`${PICK.name} has already scanned. Scan again and replace the old scan?`))return;scanScreen()})};
+  $('#q').oninput=draw;draw();$('#tog').onclick=()=>{showAll=!showAll;pickScreen()};
+}
+function scanScreen(){
+  resetE();
+  $('#view').innerHTML=`<section class="card stack"><div class="row"><div class="grow"><div class="hint small">Scanning as</div><h2>${esc(PICK.name)}</h2></div><button class="link" id="chg">Change</button></div>
+    <div class="stage" id="stage"><video id="cam" playsinline muted autoplay></video><canvas id="ov"></canvas>
+      <div class="ph0" id="ph0">Camera is off.<br>Tap “Start scan”.</div><div class="hintbar hide" id="hb"><span id="hbt"></span></div></div>
+    <div class="prog">${ORDER.map(k=>`<div class="s" data-s="${k}"><div class="b"><i></i></div>${LABEL[k]}</div>`).join('')}</div>
+    <button class="btn primary" id="go" style="width:100%;font-size:17px;min-height:52px">Start scan</button>
+    <p class="hint small" style="margin:0">Hold the phone at eye level, in good light, with only you in the frame. Take off sunglasses or a mask. Move slowly - the app takes the best frames by itself.</p></section>`;
+  $('#chg').onclick=()=>{stop();pickScreen()};
+  $('#go').onclick=begin;
+}
+function setSteps(active){$$('.prog .s').forEach(el=>{const k=el.dataset.s,p=prog()[k]/NEED[k];el.querySelector('i').style.width=(p*100)+'%';el.classList.toggle('done',p>=1);el.classList.toggle('act',k===active&&p<1)})}
+function hint(t,ok){const h=$('#hb');if(!h)return;h.classList.toggle('hide',!t);$('#hbt').textContent=t||'';$('#hbt').className=ok?'ok':''}
+async function begin(){
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1440},facingMode:'user'},audio:false})}
+  catch(e){toast('Camera is blocked. Allow camera access in your browser settings, then try again.',true,7000);return}
+  const cam=$('#cam');cam.srcObject=stream;try{await cam.play()}catch(e){}
+  $('#ph0').classList.add('hide');$('#go').disabled=true;$('#go').textContent='Scanning…';
+  scanning=true;step='front';setSteps('front');loop();
+}
+function stop(){scanning=false;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}}
+const grab=document.createElement('canvas');
+async function loop(){
+  const cam=$('#cam');
+  while(scanning){
+    const t0=performance.now();
+    if(cam.videoWidth){
+      const w=960,h=Math.round(960*cam.videoHeight/cam.videoWidth);grab.width=w;grab.height=h;grab.getContext('2d').drawImage(cam,0,0,w,h);
+      const blob=await new Promise(r=>grab.toBlob(r,'image/jpeg',.82));
+      const fd=new FormData();fd.append('step',step);fd.append('sign',step==='tilt_b'?E.tsign:E.sign);if(E.base)fd.append('base',E.base);fd.append('image',blob,'f.jpg');
+      let r;try{r=await api(`/api/join/${TOKEN}/frame`,{method:'POST',body:fd})}catch(e){if(/expired/i.test(e.message)){toast(e.message,true);stop();return}await sleep(700);continue}
+      if(!scanning)break;
+      let acc=false;
+      if(r.ok&&r.crop&&E.crops[step].length<NEED[step]&&performance.now()-E.last>380){
+        E.crops[step].push(r.crop);E.last=performance.now();acc=true;
+        if(step==='side_a'&&!E.sign)E.sign=r.side_sign;
+        if(step==='tilt_a'&&!E.tsign)E.tsign=r.tilt_sign;
+        if(step==='front'){E.pitches.push(r.pitch);if(E.pitches.length>=2)E.base=E.pitches.reduce((a,b)=>a+b,0)/E.pitches.length}
+      }
+      r.accepted=acc;draw(r);setSteps(step);hint(acc?'Captured ✓':r.msg,acc);
+      if(E.crops[step].length>=NEED[step]){
+        if(step===ORDER[ORDER.length-1]){await finish();return}
+        step=ORDER[ORDER.indexOf(step)+1];setSteps(step);hint(MSG[step],true);await sleep(1100)}
+    }
+    await sleep(Math.max(0,170-(performance.now()-t0)));
+  }
+}
+function draw(r){const ov=$('#ov');if(!ov)return;const W=ov.clientWidth,H=ov.clientHeight;ov.width=W;ov.height=H;const c=ov.getContext('2d');c.clearRect(0,0,W,H);if(!r.box)return;
+  const sc=Math.max(W/r.w,H/r.h),ox=(W-r.w*sc)/2,oy=(H-r.h*sc)/2,X=x=>x*sc+ox,Y=y=>y*sc+oy;
+  const [x1,y1,x2,y2]=r.box.map((v,i)=>i%2?Y(v):X(v));const col=r.accepted?'#22c55e':'#38bdf8';c.strokeStyle=col;c.lineWidth=3;const L=Math.min(x2-x1,y2-y1)*.22;
+  [[x1,y1,1,1],[x2,y1,-1,1],[x1,y2,1,-1],[x2,y2,-1,-1]].forEach(([x,y,dx,dy])=>{c.beginPath();c.moveTo(x,y+dy*L);c.lineTo(x,y);c.lineTo(x+dx*L,y);c.stroke()})}
+async function finish(){
+  stop();hint('Saving - checking your scan (about 20 seconds)...',true);
+  try{const r=await api(`/api/join/${TOKEN}/finish`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({student_id:PICK.id,crops:E.crops})});
+    const th=E.crops.front[0];
+    $('#view').innerHTML=`<section class="card" style="text-align:center;padding:30px 18px">${th?`<img src="${th}" style="width:120px;height:120px;border-radius:50%;object-fit:cover;border:4px solid #22c55e">`:''}
+      <h2 style="margin-top:14px">You're all set, ${esc(r.name.split(' ')[0])}! ✓</h2><p class="hint">Your face scan is saved. You can close this page.</p>
+      ${r.warning?`<div class="card" style="background:var(--warn-bg);border-color:var(--warn-line);text-align:left">${esc(r.warning)}</div>`:''}
+      <button class="btn" id="again" style="margin-top:10px">Someone else? Scan another student</button></section>`;
+    $('#again').onclick=async()=>{await start()};
+  }catch(e){toast(e.message,true,7000);stop();scanScreen()}
+}
+start();
+</script>
+</body>
+</html>
